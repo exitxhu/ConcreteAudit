@@ -1,70 +1,20 @@
 ﻿using ConcreteAudit.Helpers;
 using ConcreteAudit.Model;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
-using System.Collections.Concurrent;
 using System.ComponentModel.DataAnnotations;
 using System.Linq.Expressions;
 using System.Reflection;
 
 namespace ConcreteAudit.AuditContext
 {
-    internal class AuditAuditDbContextCache
-    {
-        private bool isFirstInstanciation = true;
-
-        public AuditAuditDbContextCache(AuditDbContextOption options, Func<string, string> auditTableNamer = null, Func<string, string> auditOldColumnNamer = null)
-        {
-            AuditTableNamer = auditTableNamer ?? ((a) => string.Format(options.AuditTableNameTemplateString, a));
-            AuditOldColumnNamer = auditOldColumnNamer ?? ((a) => string.Format(options.AuditOldColumnNameTemplateString, a));
-            Options = options;
-        }
-        /// <summary>
-        /// properties of IAuditable 
-        /// </summary>
-        protected internal IEnumerable<PropertyInfo> AuditProperties { get; internal set; }
-
-        /// <summary>
-        /// the logic for populating Audit entities should be implementin here
-        /// </summary>
-        protected internal Func<List<(string auditTableName, Dictionary<string, object> auditBaseData, Dictionary<string, object> previousData, AuditType auditType)>, List<(string audTableName, Dictionary<string, object> audData)>> AuditDataExtractor { get; set; }
-        protected internal AuditDbContextOption Options { get; private set; }
-        protected internal Func<string, string> AuditTableNamer { get; private set; }
-        protected internal Func<string, string> AuditOldColumnNamer { get; private set; }
-        protected internal Dictionary<string, (string auditTableName, Dictionary<string, PropertyInfo> propNameAndTypes)> AuditsDefinition { get; set; }
-        /// <summary>
-        /// True after constrruction, and only set to False(even if = true is specefied, it will always set to false)
-        /// </summary>
-        protected internal bool IsFirstInstanciation { get => isFirstInstanciation; set => isFirstInstanciation = false; }
-    }
-    internal static class AuditDbContextCacheManager
-    {
-        private static ConcurrentDictionary<string, AuditAuditDbContextCache> cache;
-        static AuditDbContextCacheManager()
-        {
-            cache = new ConcurrentDictionary<string, AuditAuditDbContextCache>();
-        }
-        /// <summary>
-        /// build and cache an instance of AuditAuditDbContextCache with corresponding parameters(singletone)
-        /// </summary>
-        /// <param name="context">which context this cache blongs to, usefull specially when you have several DbContext</param>
-        /// <param name="cacheOptions">options which will be provided for cache to store</param>
-        /// <param name="auditTableNamer">optional, inject your logic for naming the audit tables</param>
-        /// <param name="auditOldColumnNamer">optional, inject your logic for naming the columns which store old data</param>
-        /// <returns>the caches instance</returns>
-        public static AuditAuditDbContextCache GetInstance(AuditDbContext context, AuditDbContextOption cacheOptions, Func<string, string> auditTableNamer = null, Func<string, string> auditOldColumnNamer = null)
-        {
-            if (cache.TryGetValue(context.GetType().FullName, out var result))
-                return result;
-            cache[context.GetType().FullName] = new AuditAuditDbContextCache(cacheOptions);
-            return cache[context.GetType().FullName];
-        }
-    }
-    public class AuditDbContext : DbContext
+    public class AuditDbContext : DbContext 
     {
         internal AuditAuditDbContextCache _cache;
-        public AuditDbContext(DbContextOptions<AuditDbContext> o, AuditDbContextOption op) : base(o)
+        public AuditDbContext(DbContextOptions o, AuditDbContextOption op, IHttpContextAccessor httpContextAccessor)   : base(o) 
         {
             _cache = AuditDbContextCacheManager.GetInstance(this, op);
+            var auditUserId = httpContextAccessor.HttpContext?.User?.Identity?.Name;
             if (_cache.IsFirstInstanciation)
             {
                 _cache.AuditsDefinition = ScavangeAuditTables();
@@ -82,21 +32,21 @@ namespace ConcreteAudit.AuditContext
                                 temp = a.auditBaseData;
                                 temp[nameof(IAuditable.AuditCreateDate)] = DateTime.UtcNow;
                                 temp[nameof(IAuditable.AuditType)] = a.auditType;
-                                temp[nameof(IAuditable.AuditCreatorUserId)] = "Admin";
+                                temp[nameof(IAuditable.AuditCreatorUserId)] = auditUserId ?? "NotSet";
                                 audToAdd.Add((a.auditTableName, temp));
                                 break;
                             case AuditType.Update:
                                 temp = a.auditBaseData;
                                 temp[nameof(IAuditable.AuditCreateDate)] = DateTime.UtcNow;
                                 temp[nameof(IAuditable.AuditType)] = a.auditType;
-                                temp[nameof(IAuditable.AuditCreatorUserId)] = "Admin";
+                                temp[nameof(IAuditable.AuditCreatorUserId)] = auditUserId ?? "NotSet";
                                 audToAdd.Add((a.auditTableName, temp.Concat(a.previousData).ToDictionary(x => x.Key, x => x.Value)));
                                 break;
                             case AuditType.Delete:
                                 temp = a.previousData;
                                 temp[nameof(IAuditable.AuditCreateDate)] = DateTime.UtcNow;
                                 temp[nameof(IAuditable.AuditType)] = a.auditType;
-                                temp[nameof(IAuditable.AuditCreatorUserId)] = "Admin";
+                                temp[nameof(IAuditable.AuditCreatorUserId)] = auditUserId ?? "NotSet";
                                 audToAdd.Add((a.auditTableName, temp));
                                 break;
                             default:
@@ -287,21 +237,23 @@ namespace ConcreteAudit.AuditContext
                 confer.ToTable(entity.Value.auditTableName, string.IsNullOrEmpty(_cache.Options.ForceSchema?.Trim()) ? null : _cache.Options.ForceSchema.Trim());
             }
         }
-   
+
         /// <summary>
         /// use this method to query Audits of Entity type T
         /// </summary>
         /// <typeparam name="T">the Auditable Entity</typeparam>
         /// <param name="predicate">query expression</param>
         /// <returns>null if entity is not auditable</returns>
-        public IEnumerable<Audit<T>> Audit<T>(Expression<Func<Audit<T>, bool>> predicate) where T : class, new()
+        public IEnumerable<Audit<T>> Audit<T>(Expression<Func<Audit<T>, bool>> predicate = null) where T : class, new()
         {
             if (!_cache.AuditsDefinition.TryGetValue(typeof(T).Name, out var AudName)) return null;
 
 
             var query = this.Set<Dictionary<string, object>>(AudName.auditTableName).AsQueryable();
             var properExpression = expGenerator(predicate);
-            var rawResult = query.Where(properExpression).ToList();
+            var rawResult = properExpression is null
+                ? query.ToList()
+                : query.Where(properExpression).ToList();
             var resualt = new HashSet<Audit<T>>();
             foreach (var set in rawResult)
             {
@@ -309,6 +261,8 @@ namespace ConcreteAudit.AuditContext
                 var type = temp.GetType();
                 foreach (var prop in AudName.propNameAndTypes)
                 {
+                    if (!set.ContainsKey(prop.Key))
+                        continue;
                     if (_cache.AuditProperties.Any(p => p.Name == prop.Key))
                         prop.Value.SetValue(temp, set[prop.Key]);
                     else if (AudName.propNameAndTypes.ContainsKey(_cache.AuditOldColumnNamer(prop.Key)))
@@ -331,8 +285,10 @@ namespace ConcreteAudit.AuditContext
         /// <typeparam name="T">The audited entity</typeparam>
         /// <param name="predicate">expression to be converted</param>
         /// <returns></returns>
-        Expression<Func<Dictionary<string, object>, bool>> expGenerator<T>(Expression<Func<Audit<T>, bool>> predicate) where T : class, new()
+        static Expression<Func<Dictionary<string, object>, bool>> expGenerator<T>(Expression<Func<Audit<T>, bool>> predicate) where T : class, new()
         {
+            if (predicate == null)
+                return null;
             ParameterExpression argParam = Expression.Parameter(typeof(Dictionary<string, object>));
             var resXp = Traverser(predicate.Body, argParam);
             var lambda = Expression.Lambda<Func<Dictionary<string, object>, bool>>(resXp, argParam);
@@ -346,7 +302,7 @@ namespace ConcreteAudit.AuditContext
         /// <returns></returns>
         /// <exception cref="NullReferenceException"></exception>
         /// <exception cref="NotImplementedException"></exception>
-        Expression Traverser(Expression exp, ParameterExpression argParam)
+        static Expression Traverser(Expression exp, ParameterExpression argParam)
         {
 
             if (exp == null)
@@ -436,15 +392,6 @@ namespace ConcreteAudit.AuditContext
             }
             return null;
         }
-    }
-    public class AuditDbContextOption
-    {
-        public string AuditTableNameTemplateString { get; init; } = "{0}_Audit";
-        public string AuditOldColumnNameTemplateString { get; init; } = "{0}_Old";
-        public long PersistIntervalSec { get; init; } = 600;
-        public bool SyncronousPersistance { get; init; } = false;
-        public int InmemoryAuditTreshhold { get; init; } = 100;
-        public string? ForceSchema { get; init; } = null;
     }
 
 
