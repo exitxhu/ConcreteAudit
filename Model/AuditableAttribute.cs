@@ -7,7 +7,7 @@
     public sealed class AuditableAttribute : Attribute
     {
         public string Schema { get; set; }
-        public AuditableAttribute(string schema = null)
+        public AuditableAttribute(string schema = null, AuditPattern pattern = AuditPattern.KeepCurrent)
         {
             Schema = schema;
         }
