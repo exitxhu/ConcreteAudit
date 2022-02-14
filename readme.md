@@ -9,20 +9,20 @@
 3- in startup / program file you should inject it via AddAuditDbContext extension method, or you can inject it as scoped
 4- you can use AuditDbContextOption for furture configuring CAudit behavior
 
-** some configs are done inside -[Auditable()]- attribute **
+**some configs are done inside _[Auditable()]_ attribute**
 
 5- use contex.Audit<entity>(n=> n.predicate == true) to query the data
 6- there are 3 properties in Audit<entity> class that help you see the data:
 ```
 audited.CurrentDataData 
 audited.OldData 
-audited.Data : ** always carry the most relevent data, in insert and update it is -CurrentData- and if deleted it is -OldData- 
+audited.Data : always carry the most relevent data, in insert and update it is CurrentData and if deleted it is OldData
 ```
 ### Audit patterns
 
 you can have both Old and New data or only retaine new data.
 
-to achive that you may use the optional parameter -pattern- in [Auditable()]
+to achive that you may use the optional parameter pattern in [Auditable()]
 
 
 ##### Updating:
