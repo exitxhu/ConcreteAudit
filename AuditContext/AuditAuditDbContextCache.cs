@@ -1,5 +1,6 @@
 ﻿using ConcreteAudit.Model;
 using System.Reflection;
+using static ConcreteAudit.AuditContext.AuditDbContext;
 
 namespace ConcreteAudit.AuditContext
 {
@@ -21,11 +22,11 @@ namespace ConcreteAudit.AuditContext
         /// <summary>
         /// the logic for populating Audit entities should be implementin here
         /// </summary>
-        protected internal Func<List<(string auditTableName, Dictionary<string, object> auditBaseData, Dictionary<string, object> previousData, AuditType auditType)>, List<(string audTableName, Dictionary<string, object> audData)>> AuditDataExtractor { get; set; }
+        protected internal Func<List<ChangesToAudit>, List<(string audTableName, Dictionary<string, object> audData)>> AuditDataExtractor { get; set; }
         protected internal AuditDbContextOption Options { get; private set; }
         protected internal Func<string, string> AuditTableNamer { get; private set; }
         protected internal Func<string, string> AuditOldColumnNamer { get; private set; }
-        protected internal Dictionary<string, (string auditTableName, Dictionary<string, PropertyInfo> propNameAndTypes)> AuditsDefinition { get; set; }
+        protected internal AuditTableRuntimeCollection AuditsDefinition { get; set; }
         /// <summary>
         /// True after constrruction, and only set to False(even if = true is specefied, it will always set to false)
         /// </summary>

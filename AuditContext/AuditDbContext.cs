@@ -2,16 +2,17 @@
 using ConcreteAudit.Model;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using System.Collections;
 using System.ComponentModel.DataAnnotations;
 using System.Linq.Expressions;
 using System.Reflection;
 
 namespace ConcreteAudit.AuditContext
 {
-    public class AuditDbContext : DbContext 
+    public partial class AuditDbContext : DbContext
     {
         internal AuditAuditDbContextCache _cache;
-        public AuditDbContext(DbContextOptions o, AuditDbContextOption op, IHttpContextAccessor httpContextAccessor)   : base(o) 
+        public AuditDbContext(DbContextOptions o, AuditDbContextOption op, IHttpContextAccessor httpContextAccessor) : base(o)
         {
             _cache = AuditDbContextCacheManager.GetInstance(this, op);
             var auditUserId = httpContextAccessor.HttpContext?.User?.Identity?.Name;
@@ -24,30 +25,43 @@ namespace ConcreteAudit.AuditContext
                     foreach (var a in aud)
                     {
                         Dictionary<string, object> temp = new Dictionary<string, object>();
-                        switch (a.auditType)
+                        switch (a.AuditType)
                         {
                             case AuditType.None:
                                 break;
                             case AuditType.Insert:
-                                temp = a.auditBaseData;
+                                temp = a.RawChange.ToDictionary();
                                 temp[nameof(IAuditable.AuditCreateDate)] = DateTime.UtcNow;
-                                temp[nameof(IAuditable.AuditType)] = a.auditType;
+                                temp[nameof(IAuditable.AuditType)] = a.AuditType;
                                 temp[nameof(IAuditable.AuditCreatorUserId)] = auditUserId ?? "NotSet";
-                                audToAdd.Add((a.auditTableName, temp));
+                                audToAdd.Add((a.AuditTable.Name, temp));
                                 break;
                             case AuditType.Update:
-                                temp = a.auditBaseData;
+                                temp = a.RawChange.ToDictionary();
                                 temp[nameof(IAuditable.AuditCreateDate)] = DateTime.UtcNow;
-                                temp[nameof(IAuditable.AuditType)] = a.auditType;
+                                temp[nameof(IAuditable.AuditType)] = a.AuditType;
                                 temp[nameof(IAuditable.AuditCreatorUserId)] = auditUserId ?? "NotSet";
-                                audToAdd.Add((a.auditTableName, temp.Concat(a.previousData).ToDictionary(x => x.Key, x => x.Value)));
+                                switch (a.AuditTable.Pattern)
+                                {
+                                    case AuditPattern.KeepCurrent:
+                                        audToAdd.Add((a.AuditTable.Name, temp));
+                                        break;
+                                    case AuditPattern.KeepCurrentAndOld:
+                                        audToAdd.Add((a.AuditTable.Name, temp.Concat(a.AuditOldData).ToDictionary(x => x.Key, x => x.Value)));
+                                        break;
+                                }
+
                                 break;
                             case AuditType.Delete:
-                                temp = a.previousData;
+                                temp = a.AuditTable.Pattern switch
+                                {
+                                    AuditPattern.KeepCurrentAndOld => a.AuditOldData,
+                                    AuditPattern.KeepCurrent => a.RawChange.ToDictionary()
+                                };
                                 temp[nameof(IAuditable.AuditCreateDate)] = DateTime.UtcNow;
-                                temp[nameof(IAuditable.AuditType)] = a.auditType;
+                                temp[nameof(IAuditable.AuditType)] = a.AuditType;
                                 temp[nameof(IAuditable.AuditCreatorUserId)] = auditUserId ?? "NotSet";
-                                audToAdd.Add((a.auditTableName, temp));
+                                audToAdd.Add((a.AuditTable.Name, temp));
                                 break;
                             default:
                                 break;
@@ -62,7 +76,7 @@ namespace ConcreteAudit.AuditContext
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
         {
             var changes = this.ChangeTracker.Entries().ToList();
-            var audChanges = new List<(string auditTableName, Dictionary<string, object> auditData, Dictionary<string, object> previousData, AuditType auditType)>();
+            var audChanges = new List<ChangesToAudit>();
 
             foreach (var change in changes)
             {
@@ -70,19 +84,22 @@ namespace ConcreteAudit.AuditContext
                     continue;
                 if (!_cache.AuditsDefinition.TryGetValue(change.Metadata.ClrType.Name, out var aud))
                     continue;
-                var prev = change.State == EntityState.Modified
-                    ? change.Properties.Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
-                    : change.State == EntityState.Deleted
-                        ? change.Entity.ToDictionary().ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
-                        : null;
-                var curr = change.Entity.ToDictionary();
+                var prev = aud.Pattern switch
+                {
+                    AuditPattern.KeepCurrentAndOld => change.State == EntityState.Modified
+                ? change.Properties.Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
+                : change.State == EntityState.Deleted
+                    ? change.Entity.ToDictionary().ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
+                    : null,
+                    AuditPattern.KeepCurrent => null,
+                };
                 var state = change.State switch
                 {
                     EntityState.Modified => AuditType.Update,
                     EntityState.Added => AuditType.Insert,
                     EntityState.Deleted => AuditType.Delete,
                 };
-                audChanges.Add((aud.auditTableName, curr, prev, state));
+                audChanges.Add(new ChangesToAudit(change.Entity, aud, prev, state));
             }
 
 
@@ -95,42 +112,12 @@ namespace ConcreteAudit.AuditContext
         }
         public override int SaveChanges()
         {
-            var changes = this.ChangeTracker.Entries().ToList();
-            var audChanges = new List<(string auditTableName, Dictionary<string, object> auditData, Dictionary<string, object> previousData, AuditType auditType)>();
-
-            foreach (var change in changes)
-            {
-                if (change.State == EntityState.Unchanged || change.State == EntityState.Detached)
-                    continue;
-                if (!_cache.AuditsDefinition.TryGetValue(change.Metadata.ClrType.Name, out var aud))
-                    continue;
-                var prev = change.State == EntityState.Modified
-                    ? change.Properties.Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
-                    : change.State == EntityState.Deleted
-                        ? change.Entity.ToDictionary().ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
-                        : null;
-                var curr = change.Entity.ToDictionary();
-                var state = change.State switch
-                {
-                    EntityState.Modified => AuditType.Update,
-                    EntityState.Added => AuditType.Insert,
-                    EntityState.Deleted => AuditType.Delete,
-                };
-                audChanges.Add((aud.auditTableName, curr, prev, state));
-            }
-
-
-            var res = base.SaveChanges();
-            foreach (var m in _cache.AuditDataExtractor(audChanges))
-                this.Set<Dictionary<string, object>>(m.audTableName).Add(m.audData);
-
-            res = base.SaveChanges();
-            return res;
+            return base.SaveChanges();
         }
         public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default(CancellationToken))
         {
             var changes = this.ChangeTracker.Entries().ToList();
-            var audChanges = new List<(string auditTableName, Dictionary<string, object> auditData, Dictionary<string, object> previousData, AuditType auditType)>();
+            var audChanges = new List<ChangesToAudit>();
 
             foreach (var change in changes)
             {
@@ -138,19 +125,22 @@ namespace ConcreteAudit.AuditContext
                     continue;
                 if (!_cache.AuditsDefinition.TryGetValue(change.Metadata.ClrType.Name, out var aud))
                     continue;
-                var prev = change.State == EntityState.Modified
-                    ? change.Properties.Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
-                    : change.State == EntityState.Deleted
-                        ? change.Entity.ToDictionary().ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
-                        : null;
-                var curr = change.Entity.ToDictionary();
+                var prev = aud.Pattern switch
+                {
+                    AuditPattern.KeepCurrentAndOld => change.State == EntityState.Modified
+                ? change.Properties.Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
+                : change.State == EntityState.Deleted
+                    ? change.Entity.ToDictionary().ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
+                    : null,
+                    AuditPattern.KeepCurrent => null,
+                };
                 var state = change.State switch
                 {
                     EntityState.Modified => AuditType.Update,
                     EntityState.Added => AuditType.Insert,
                     EntityState.Deleted => AuditType.Delete,
                 };
-                audChanges.Add((aud.auditTableName, curr, prev, state));
+                audChanges.Add(new ChangesToAudit(change.Entity, aud, prev, state));
             }
 
 
@@ -163,78 +153,56 @@ namespace ConcreteAudit.AuditContext
         }
         public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default(CancellationToken))
         {
-            var changes = this.ChangeTracker.Entries().ToList();
-            var audChanges = new List<(string auditTableName, Dictionary<string, object> auditData, Dictionary<string, object> previousData, AuditType auditType)>();
-
-            foreach (var change in changes)
-            {
-                if (change.State == EntityState.Unchanged || change.State == EntityState.Detached)
-                    continue;
-                if (!_cache.AuditsDefinition.TryGetValue(change.Metadata.ClrType.Name, out var aud))
-                    continue;
-                var prev = change.State == EntityState.Modified
-                    ? change.Properties.Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
-                    : change.State == EntityState.Deleted
-                        ? change.Entity.ToDictionary().ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
-                        : null;
-                var curr = change.Entity.ToDictionary();
-                var state = change.State switch
-                {
-                    EntityState.Modified => AuditType.Update,
-                    EntityState.Added => AuditType.Insert,
-                    EntityState.Deleted => AuditType.Delete,
-                };
-                audChanges.Add((aud.auditTableName, curr, prev, state));
-            }
-
-
-            var res = await base.SaveChangesAsync(cancellationToken);
-            foreach (var m in _cache.AuditDataExtractor(audChanges))
-                this.Set<Dictionary<string, object>>(m.audTableName).Add(m.audData);
-
-            res = await base.SaveChangesAsync(cancellationToken);
-            return res;
+            return await base.SaveChangesAsync(cancellationToken);
         }
         /// <summary>
         /// Check all entity's for Auditable attribute then create a dictionary of corresponding shadow fields and returns it.
         /// </summary>
         /// <returns></returns>
-        private Dictionary<string, (string auditTableName, Dictionary<string, PropertyInfo> propNameAndTypes)> ScavangeAuditTables()
+        private AuditTableRuntimeCollection ScavangeAuditTables()
         {
             _cache.AuditProperties = ((TypeInfo)typeof(IAuditable)).DeclaredProperties;
-            var audits =
-                new Dictionary<string, (string auditTableName, Dictionary<string, PropertyInfo> propNameAndTypes)>();
-            foreach (var entity in this.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(n => n.PropertyType.IsGenericType && n.PropertyType.GenericTypeArguments[0].GetCustomAttribute<AuditableAttribute>() is not null))
+            var audrun = new AuditTableRuntimeCollection();
+            foreach (var entity in this.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(n => n.PropertyType.IsGenericType && n.PropertyType.GenericTypeArguments.Any(n => n.GetCustomAttribute<AuditableAttribute>() is not null)))
             {
-                var tempProps = new Dictionary<string, PropertyInfo>();
+                var temprun = new AuditTableRuntime();
                 Type entityType = entity.PropertyType.GenericTypeArguments[0];
                 var props = entityType.GetProperties(BindingFlags.Public | BindingFlags.Instance);
-
+                var attr = entityType.GetCustomAttribute<AuditableAttribute>(true);
+                temprun.Pattern = attr.Pattern;
+                temprun.Schema = attr.Schema;
                 foreach (var prop in props)
                 {
-                    tempProps[prop.Name] = prop;
-                    tempProps[_cache.AuditOldColumnNamer(prop.Name)] = prop;
+                    temprun.Columns.Add(new AuditTableRuntimeProperty(prop.Name, prop));
+                    if (attr.Pattern == AuditPattern.KeepCurrentAndOld)
+                        temprun.Columns.Add(new AuditTableRuntimeProperty(_cache.AuditOldColumnNamer(prop.Name), prop));
+
                 }
                 foreach (var prop in _cache.AuditProperties)
                 {
-                    tempProps[prop.Name] = prop;
+                    temprun.Columns.Add(new AuditTableRuntimeProperty(prop.Name, prop));
                 }
-                audits[entityType.Name] = (_cache.AuditTableNamer(entityType.Name), tempProps);
+                temprun.Name = _cache.AuditTableNamer(entityType.Name);
+                temprun.BaseTableName = entityType.Name;
+                audrun.Add(temprun);
             }
-            return audits;
+            return audrun;
         }
         protected override void OnModelCreating(ModelBuilder mb)
         {
             foreach (var entity in _cache.AuditsDefinition)
             {
-                var confer = mb.Entity(entity.Value.auditTableName);
-                foreach (var prop in entity.Value.propNameAndTypes)
+                var confer = mb.Entity(entity.Name);
+                foreach (var column in entity.Columns)
                 {
-                    confer.Property(prop.Value.PropertyType, prop.Key);
-                    if (prop.Value.GetCustomAttribute<KeyAttribute>() is object)
-                        confer.HasKey(prop.Key);
+                    confer.Property(column.ColumnMetadata.PropertyType, column.ColumnName);
+                    if (column.ColumnMetadata.GetCustomAttribute<KeyAttribute>() is object)
+                        confer.HasKey(column.ColumnName);
                 }
-                confer.ToTable(entity.Value.auditTableName, string.IsNullOrEmpty(_cache.Options.ForceSchema?.Trim()) ? null : _cache.Options.ForceSchema.Trim());
+                var schema = entity.Schema;
+                confer.ToTable(entity.Name, string.IsNullOrEmpty(_cache.Options.ForceSchema?.Trim())
+                                                                                                        ? schema
+                                                                                                        : _cache.Options.ForceSchema.Trim());
             }
         }
 
@@ -249,7 +217,7 @@ namespace ConcreteAudit.AuditContext
             if (!_cache.AuditsDefinition.TryGetValue(typeof(T).Name, out var AudName)) return null;
 
 
-            var query = this.Set<Dictionary<string, object>>(AudName.auditTableName).AsQueryable();
+            var query = this.Set<Dictionary<string, object>>(AudName.Name).AsQueryable();
             var properExpression = expGenerator(predicate);
             var rawResult = properExpression is null
                 ? query.ToList()
@@ -259,24 +227,31 @@ namespace ConcreteAudit.AuditContext
             {
                 var temp = new Audit<T>();
                 var type = temp.GetType();
-                foreach (var prop in AudName.propNameAndTypes)
+                foreach (var column in AudName.Columns)
                 {
-                    if (!set.ContainsKey(prop.Key))
+                    if (!set.ContainsKey(column.ColumnName))
                         continue;
-                    if (_cache.AuditProperties.Any(p => p.Name == prop.Key))
-                        prop.Value.SetValue(temp, set[prop.Key]);
-                    else if (AudName.propNameAndTypes.ContainsKey(_cache.AuditOldColumnNamer(prop.Key)))
-                    {
-                        prop.Value.SetValue(temp.CurrentData, set[prop.Key]);
-                    }
-                    else
-                        prop.Value.SetValue(temp.OldData, set[prop.Key]);
+                    if (_cache.AuditProperties.Any(p => p.Name == column.ColumnName))
+                        column.ColumnMetadata.SetValue(temp, set[column.ColumnName]);
+                    else switch (AudName.Pattern)
+                        {
+                            case AuditPattern.KeepCurrent:
+                                column.ColumnMetadata.SetValue(temp.CurrentData, set[column.ColumnName]);
+                                break;
+                            case AuditPattern.KeepCurrentAndOld:
+                                if (AudName.Columns.Contains(n => n.ColumnName == _cache.AuditOldColumnNamer(column.ColumnName)))
+                                {
+                                    column.ColumnMetadata.SetValue(temp.CurrentData, set[column.ColumnName]);
+                                }
+                                else
+                                    column.ColumnMetadata.SetValue(temp.OldData, set[column.ColumnName]);
+                                break;
+
+                        }
 
                 }
                 resualt.Add(temp);
             }
-
-
             return resualt;
         }
         /// <summary>
@@ -393,6 +368,143 @@ namespace ConcreteAudit.AuditContext
             return null;
         }
     }
+    public class AuditTableRuntimeProperty
+    {
+        public AuditTableRuntimeProperty(string columnName, PropertyInfo columnMetadata)
+        {
+            ColumnName = columnName;
+            ColumnMetadata = columnMetadata;
+        }
 
+        public string ColumnName { get; private set; }
+        public PropertyInfo ColumnMetadata { get; private set; }
+    }
+    public class AuditTableRuntime
+    {
+        public string BaseTableName { get; set; }
+        public string Name { get; set; }
+        public AuditPattern Pattern { get; set; }
+        public string Schema { get; set; }
+        public AuditTableRuntimePropertyCollection Columns { get; set; } = new();
 
+    }
+    public class AuditTableRuntimeCollection : ICollection<AuditTableRuntime>
+    {
+
+        public HashSet<AuditTableRuntime> Tables { get; set; } = new();
+
+        public int Count => Tables.Count;
+
+        public bool IsReadOnly => false;
+
+        public void Add(AuditTableRuntime item)
+        {
+            Tables.Add(item);
+        }
+
+        public void Clear()
+        {
+            Tables.Clear();
+        }
+
+        public bool Contains(AuditTableRuntime item)
+        {
+            return Tables.Contains(item);
+        }
+        public bool Contains(Func<AuditTableRuntime, bool> predicate)
+        {
+            return Tables.Any(predicate);
+        }
+        public void CopyTo(AuditTableRuntime[] array, int arrayIndex)
+        {
+            Tables.CopyTo(array, arrayIndex);
+        }
+
+        public IEnumerator<AuditTableRuntime> GetEnumerator()
+        {
+            return Tables.GetEnumerator();
+        }
+
+        public bool Remove(AuditTableRuntime item)
+        {
+            return Tables.Remove(item);
+        }
+
+        internal bool TryGetValue(string name, out AuditTableRuntime audName)
+        {
+            audName = Tables.FirstOrDefault(x => x.BaseTableName == name);
+            return audName is not null;
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return Tables.GetEnumerator();
+        }
+    }
+    public class AuditTableRuntimePropertyCollection : ICollection<AuditTableRuntimeProperty>
+    {
+
+        public HashSet<AuditTableRuntimeProperty> Properties { get; set; } = new();
+
+        public int Count => Properties.Count;
+
+        public bool IsReadOnly => false;
+
+        public void Add(AuditTableRuntimeProperty item)
+        {
+            Properties.Add(item);
+        }
+
+        public void Clear()
+        {
+            Properties.Clear();
+        }
+
+        public bool Contains(AuditTableRuntimeProperty item)
+        {
+            return Properties.Contains(item);
+        }
+        public bool Contains(Func<AuditTableRuntimeProperty, bool> predicate)
+        {
+            return Properties.Any(predicate);
+        }
+        public void CopyTo(AuditTableRuntimeProperty[] array, int arrayIndex)
+        {
+            Properties.CopyTo(array, arrayIndex);
+        }
+
+        public IEnumerator<AuditTableRuntimeProperty> GetEnumerator()
+        {
+            return Properties.GetEnumerator();
+        }
+
+        public bool Remove(AuditTableRuntimeProperty item)
+        {
+            return Properties.Remove(item);
+        }
+
+        public bool TryGetValue(string name, out AuditTableRuntimeProperty audName)
+        {
+            audName = Properties.FirstOrDefault(x => x.ColumnName == name);
+            return audName is not null;
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return Properties.GetEnumerator();
+        }
+    }
+
+    public abstract class Strategy
+    {
+
+    }
+    public class KeepCurrentStrategy : Strategy
+    {
+
+    }
+    public class KeepCurrentAndOldStrategy : Strategy
+    {
+
+    }
 }
