@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using System.Collections;
 using System.ComponentModel.DataAnnotations;
+using System.Diagnostics;
 using System.Linq.Expressions;
 using System.Reflection;
 
@@ -190,11 +191,16 @@ namespace ConcreteAudit.AuditContext
         }
         protected override void OnModelCreating(ModelBuilder mb)
         {
+            Debugger.Launch();
+            var nowmodels = mb.Model.GetEntityTypes().ToList();
             foreach (var entity in _cache.AuditsDefinition)
             {
+                var tt = nowmodels.Single(m => m.Name == entity.BaseTableName).GetNavigations();
                 var confer = mb.Entity(entity.Name);
                 foreach (var column in entity.Columns)
                 {
+                    if (tt.Any(n => n.Name == column.ColumnName))
+                        continue;
                     confer.Property(column.ColumnMetadata.PropertyType, column.ColumnName);
                     if (column.ColumnMetadata.GetCustomAttribute<KeyAttribute>() is object)
                         confer.HasKey(column.ColumnName);
