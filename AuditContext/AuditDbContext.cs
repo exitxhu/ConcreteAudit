@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using System.Collections;
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Diagnostics;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -191,15 +192,16 @@ namespace ConcreteAudit.AuditContext
         }
         protected override void OnModelCreating(ModelBuilder mb)
         {
-            Debugger.Launch();
             var nowmodels = mb.Model.GetEntityTypes().ToList();
             foreach (var entity in _cache.AuditsDefinition)
             {
-                var tt = nowmodels.Single(m => m.Name == entity.BaseTableName).GetNavigations();
+                var t = nowmodels.Single(m => m.GetTableName() == entity.BaseTableName);
+                var navigations = t.GetNavigations();
+                var skipNavigation =t.GetSkipNavigations();
                 var confer = mb.Entity(entity.Name);
-                foreach (var column in entity.Columns)
+                foreach (var column in entity.Columns.Where(n => n.ColumnMetadata.GetCustomAttribute<NotMappedAttribute>() is not object))
                 {
-                    if (tt.Any(n => n.Name == column.ColumnName))
+                    if (navigations.Any(n => n.Name == column.ColumnName) || skipNavigation.Any(n => n.Name == column.ColumnName))
                         continue;
                     confer.Property(column.ColumnMetadata.PropertyType, column.ColumnName);
                     if (column.ColumnMetadata.GetCustomAttribute<KeyAttribute>() is object)
