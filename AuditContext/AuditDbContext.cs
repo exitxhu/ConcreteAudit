@@ -195,9 +195,9 @@ namespace ConcreteAudit.AuditContext
             var nowmodels = mb.Model.GetEntityTypes().ToList();
             foreach (var entity in _cache.AuditsDefinition)
             {
-                var t = nowmodels.Single(m => m.GetTableName() == entity.BaseTableName);
+                var t = nowmodels.Single(m => !m.IsOwned() && m.GetTableName() == entity.BaseTableName);
                 var navigations = t.GetNavigations();
-                var skipNavigation =t.GetSkipNavigations();
+                var skipNavigation = t.GetSkipNavigations();
                 var confer = mb.Entity(entity.Name);
                 foreach (var column in entity.Columns.Where(n => n.ColumnMetadata.GetCustomAttribute<NotMappedAttribute>() is not object))
                 {
@@ -209,8 +209,8 @@ namespace ConcreteAudit.AuditContext
                 }
                 var schema = entity.Schema;
                 confer.ToTable(entity.Name, string.IsNullOrEmpty(_cache.Options.ForceSchema?.Trim())
-                                                                                                        ? schema
-                                                                                                        : _cache.Options.ForceSchema.Trim());
+                            ? schema
+                            : _cache.Options.ForceSchema.Trim());
             }
         }
 
