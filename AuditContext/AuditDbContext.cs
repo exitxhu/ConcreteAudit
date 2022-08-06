@@ -14,8 +14,9 @@ namespace ConcreteAudit.AuditContext
 {
     public partial class AuditDbContext : DbContext
     {
+        public delegate string AuditDbContextUserIdRelover();
         internal AuditAuditDbContextCache _cache;
-        public AuditDbContext(DbContextOptions o, AuditDbContextOption op, IHttpContextAccessor httpContextAccessor, Func<string>? userIdResolver = null) : base(o)
+        public AuditDbContext(DbContextOptions o, AuditDbContextOption op, IHttpContextAccessor httpContextAccessor, AuditDbContextUserIdRelover? userIdResolver = null) : base(o)
         {
             _cache = AuditDbContextCacheManager.GetInstance(this, op);
             var auditUserId = userIdResolver is null

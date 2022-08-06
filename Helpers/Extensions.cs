@@ -7,15 +7,18 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using System.ComponentModel;
 using System.Linq.Expressions;
+using static ConcreteAudit.AuditContext.AuditDbContext;
 
 namespace ConcreteAudit.Helpers
 {
     public static class Extensions
     {
-        public static IServiceCollection AddAuditDbContext<T>(this IServiceCollection services, Action<DbContextOptionsBuilder>? optionsAction = null, AuditDbContextOption auditOptionsAction = null, ServiceLifetime contextLifetime = ServiceLifetime.Scoped, ServiceLifetime optionsLifetime = ServiceLifetime.Scoped) where T : DbContext
+        public static IServiceCollection AddAuditDbContext<T>(this IServiceCollection services, Action<DbContextOptionsBuilder>? optionsAction = null, AuditDbContextOption auditOptionsAction = null, ServiceLifetime contextLifetime = ServiceLifetime.Scoped, ServiceLifetime optionsLifetime = ServiceLifetime.Scoped, AuditDbContextUserIdRelover? userIdRelover = null) where T : DbContext
         {
             services.AddHttpContextAccessor();
             services.AddSingleton(auditOptionsAction ?? new AuditDbContextOption());
+            if (userIdRelover is not null)
+                services.AddTransient<AuditDbContextUserIdRelover>(a => () => userIdRelover());
             return services.AddDbContext<T>(optionsAction, contextLifetime, optionsLifetime);
         }
         public static IEnumerable<Audit<T>> Audit<T>(this DbSet<T> _this, Expression<Func<Audit<T>, bool>> predicate) where T : class, new()

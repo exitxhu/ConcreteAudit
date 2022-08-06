@@ -12,6 +12,4 @@
         /// </summary>
         public string? ForceSchema { get; init; } = null;
     }
-
-
 }
