@@ -2,6 +2,7 @@
 using ConcreteAudit.Model;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using System;
 using System.Collections;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
@@ -14,10 +15,12 @@ namespace ConcreteAudit.AuditContext
     public partial class AuditDbContext : DbContext
     {
         internal AuditAuditDbContextCache _cache;
-        public AuditDbContext(DbContextOptions o, AuditDbContextOption op, IHttpContextAccessor httpContextAccessor) : base(o)
+        public AuditDbContext(DbContextOptions o, AuditDbContextOption op, IHttpContextAccessor httpContextAccessor, Func<string>? userIdResolver = null) : base(o)
         {
             _cache = AuditDbContextCacheManager.GetInstance(this, op);
-            var auditUserId = httpContextAccessor.HttpContext?.User?.Identity?.Name;
+            var auditUserId = userIdResolver is null
+                ? httpContextAccessor.HttpContext?.User?.Identity?.Name
+                : userIdResolver();
             if (_cache.IsFirstInstanciation)
             {
                 _cache.AuditsDefinition = ScavangeAuditTables();
