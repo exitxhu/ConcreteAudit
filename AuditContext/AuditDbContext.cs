@@ -19,14 +19,14 @@ namespace ConcreteAudit.AuditContext
         public AuditDbContext(DbContextOptions o, AuditDbContextOption op, IHttpContextAccessor httpContextAccessor, AuditDbContextUserIdRelover? userIdResolver = null) : base(o)
         {
             _cache = AuditDbContextCacheManager.GetInstance(this, op);
-            var auditUserId = userIdResolver is null
-                ? httpContextAccessor.HttpContext?.User?.Identity?.Name
-                : userIdResolver();
             if (_cache.IsFirstInstanciation)
             {
                 _cache.AuditsDefinition = ScavangeAuditTables();
                 _cache.AuditDataExtractor = (aud) =>
                 {
+                    var auditUserId = userIdResolver is null
+                        ? httpContextAccessor.HttpContext?.User?.Identity?.Name
+                        : userIdResolver();
                     var audToAdd = new List<(string audTableName, Dictionary<string, object> audData)>();
                     foreach (var a in aud)
                     {
@@ -93,7 +93,9 @@ namespace ConcreteAudit.AuditContext
                 var prev = aud.Pattern switch
                 {
                     AuditPattern.KeepCurrentAndOld => change.State == EntityState.Modified
-                ? change.Properties.Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
+                ? change.Properties
+                        .Where(n => n.Metadata.PropertyInfo.GetCustomAttribute<AuditIgnoreAttribute>() is null)
+                        .Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
                 : change.State == EntityState.Deleted
                     ? change.Entity.ToDictionary().ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
                     : null,
@@ -134,7 +136,9 @@ namespace ConcreteAudit.AuditContext
                 var prev = aud.Pattern switch
                 {
                     AuditPattern.KeepCurrentAndOld => change.State == EntityState.Modified
-                ? change.Properties.Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
+                ? change.Properties
+                        .Where(n => n.Metadata.PropertyInfo.GetCustomAttribute<AuditIgnoreAttribute>() is null)
+                        .Select(n => new KeyValuePair<string, object>(n.Metadata.Name, n.OriginalValue)).ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
                 : change.State == EntityState.Deleted
                     ? change.Entity.ToDictionary().ToDictionary(x => _cache.AuditOldColumnNamer(x.Key), x => x.Value)
                     : null,
@@ -173,7 +177,7 @@ namespace ConcreteAudit.AuditContext
             {
                 var temprun = new AuditTableRuntime();
                 Type entityType = entity.PropertyType.GenericTypeArguments[0];
-                var props = entityType.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                var props = entityType.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(a => a.GetCustomAttribute<AuditIgnoreAttribute>() is null).ToList();
                 var attr = entityType.GetCustomAttribute<AuditableAttribute>(true);
                 temprun.Pattern = attr.Pattern;
                 temprun.Schema = attr.Schema;
@@ -189,7 +193,7 @@ namespace ConcreteAudit.AuditContext
                     temprun.Columns.Add(new AuditTableRuntimeProperty(prop.Name, prop));
                 }
                 temprun.Name = _cache.AuditTableNamer(entityType.Name);
-                temprun.BaseTableName = entityType.Name;
+                temprun.BaseTableName = entityType.GetCustomAttribute<TableAttribute>()?.Name ?? entity.Name;
                 audrun.Add(temprun);
             }
             return audrun;

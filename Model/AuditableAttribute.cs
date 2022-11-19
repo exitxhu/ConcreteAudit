@@ -1,19 +1,25 @@
-﻿namespace ConcreteAudit.Model
+﻿namespace ConcreteAudit.Model;
+
+/// <summary>
+/// Decorate your entities with this and AuditContext witll automaticly do the rest ;)
+/// </summary>
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class AuditableAttribute : Attribute
 {
-    /// <summary>
-    /// Decorate your entities with this and AuditContext witll automaticly do the rest ;)
-    /// </summary>
-    [AttributeUsage(AttributeTargets.Class)]
-    public sealed class AuditableAttribute : Attribute
+    public string Schema { get; set; }
+    public AuditPattern Pattern { get; }
+
+    public AuditableAttribute(string schema = null, AuditPattern pattern = AuditPattern.KeepCurrent)
     {
-        public string Schema { get; set; }
-        public AuditPattern Pattern { get; }
-
-        public AuditableAttribute(string schema = null, AuditPattern pattern = AuditPattern.KeepCurrent)
-        {
-            Schema = schema;
-            Pattern = pattern;
-        }
+        Schema = schema;
+        Pattern = pattern;
     }
+}
 
+/// <summary>
+/// Decorate your entities with this and AuditContext witll automaticly do the rest ;)
+/// </summary>
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class AuditIgnoreAttribute : Attribute
+{
 }
